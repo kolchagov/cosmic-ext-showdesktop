@@ -6,6 +6,38 @@ use cosmic::{Action, Application, Element, Task};
 use wm::WindowManager;
 
 fn main() -> cosmic::iced::Result {
+    let mut single_shot = false;
+
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-s" | "--single-shot" => single_shot = true,
+            "-h" | "--help" => {
+                println!("Usage: cosmic-ext-showdesktop [-s]");
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Unknown flag: {arg}");
+                eprintln!("Usage: cosmic-ext-showdesktop [-s]");
+                return Ok(());
+            }
+        }
+    }
+
+    if single_shot {
+        match WindowManager::new() {
+            Ok(wm) => {
+                if let Err(err) = wm.toggle_persistent() {
+                    eprintln!("single-shot toggle failed: {err}");
+                }
+            }
+            Err(err) => {
+                eprintln!("single-shot startup failed: {err}");
+            }
+        }
+
+        return Ok(());
+    }
+
     cosmic::applet::run::<Applet>(())
 }
 

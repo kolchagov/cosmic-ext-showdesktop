@@ -17,16 +17,33 @@ use cosmic::cctk::{
     },
     wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1,
 };
+use dirs::config_dir;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RestoreKind {
     Normal,
     Maximized,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSnapshotEntry {
+    identifier: String,
+    app_id: String,
+    restore_kind: RestoreKind,
+    was_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSnapshot {
+    entries: Vec<PersistedSnapshotEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +59,7 @@ struct SnapshotEntry {
 #[derive(Debug, Clone)]
 enum Request {
     Toggle(mpsc::Sender<Result<(), WmError>>),
+    TogglePersistent(mpsc::Sender<Result<(), WmError>>),
 }
 
 #[derive(Debug, Clone)]
@@ -52,25 +70,44 @@ pub struct WindowManager {
 impl WindowManager {
     pub fn new() -> Result<Self, WmError> {
         let (request_tx, request_rx) = calloop::channel::channel::<Request>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), WmError>>();
 
         thread::Builder::new()
             .name("cosmic-show-desktop-wayland".to_string())
             .spawn(move || {
-                let _ = wayland_handler(request_rx);
+                let ready_tx_for_error = ready_tx.clone();
+                if let Err(err) = wayland_handler(request_rx, ready_tx) {
+                    let _ = ready_tx_for_error.send(Err(err));
+                }
             })
             .map_err(|e| WmError::Command(format!("failed to spawn wayland thread: {e}")))?;
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|e| WmError::Command(format!("wayland startup timeout/error: {e}")))??;
 
         Ok(Self { request_tx })
     }
 
     pub fn toggle(&self) -> Result<(), WmError> {
+        self.send_request(Request::Toggle)
+    }
+
+    pub fn toggle_persistent(&self) -> Result<(), WmError> {
+        self.send_request(Request::TogglePersistent)
+    }
+
+    fn send_request(
+        &self,
+        request: fn(mpsc::Sender<Result<(), WmError>>) -> Request,
+    ) -> Result<(), WmError> {
         let (tx, rx) = mpsc::channel();
         self.request_tx
-            .send(Request::Toggle(tx))
-            .map_err(|e| WmError::Command(format!("failed to send toggle request: {e}")))?;
+            .send(request(tx))
+            .map_err(|e| WmError::Command(format!("failed to send request: {e}")))?;
 
         rx.recv_timeout(Duration::from_secs(2))
-            .map_err(|e| WmError::Command(format!("toggle response timeout/error: {e}")))?
+            .map_err(|e| WmError::Command(format!("response timeout/error: {e}")))?
     }
 }
 
@@ -101,6 +138,131 @@ impl AppData {
 
         self.snapshot.clear();
         self.snapshot_ids.clear();
+    }
+
+    fn handle_toggle_persistent(&mut self) -> Result<(), WmError> {
+        if snapshot_file_path()?.exists() {
+            let snapshot = load_snapshot()?;
+            let restore_result = self.restore_persisted_snapshot(&snapshot);
+            let clear_result = clear_snapshot_file();
+            restore_result?;
+            clear_result?;
+            return Ok(());
+        }
+
+        self.minimize_all_and_persist()
+    }
+
+    fn minimize_all_and_persist(&mut self) -> Result<(), WmError> {
+        let Some(manager) = self.toplevel_manager_state.as_ref() else {
+            return Err(WmError::Command(
+                "cosmic toplevel manager is unavailable".to_string(),
+            ));
+        };
+
+        let mut infos: Vec<&ToplevelInfo> = self
+            .toplevel_info_state
+            .toplevels()
+            .filter(|info| should_manage_toplevel(info))
+            .filter(|info| info.cosmic_toplevel.is_some())
+            .filter(|info| {
+                !info
+                    .state
+                    .contains(&zcosmic_toplevel_handle_v1::State::Minimized)
+            })
+            .collect();
+
+        infos.sort_by_key(|info| {
+            (
+                info.identifier.clone(),
+                info.app_id.clone(),
+                info.foreign_toplevel.id().protocol_id(),
+            )
+        });
+
+        let mut entries = Vec::with_capacity(infos.len());
+
+        for info in infos {
+            let Some(cosmic_toplevel) = info.cosmic_toplevel.as_ref() else {
+                continue;
+            };
+
+            let restore_kind = if info
+                .state
+                .contains(&zcosmic_toplevel_handle_v1::State::Maximized)
+            {
+                RestoreKind::Maximized
+            } else {
+                RestoreKind::Normal
+            };
+            let was_active = info
+                .state
+                .contains(&zcosmic_toplevel_handle_v1::State::Activated);
+
+            manager.manager.set_minimized(cosmic_toplevel);
+            entries.push(PersistedSnapshotEntry {
+                identifier: info.identifier.clone(),
+                app_id: info.app_id.clone(),
+                restore_kind,
+                was_active,
+            });
+        }
+
+        save_snapshot(&PersistedSnapshot { entries })
+    }
+
+    fn restore_persisted_snapshot(&mut self, snapshot: &PersistedSnapshot) -> Result<(), WmError> {
+        let Some(manager) = self.toplevel_manager_state.as_ref() else {
+            return Err(WmError::Command(
+                "cosmic toplevel manager is unavailable".to_string(),
+            ));
+        };
+
+        let mut current_toplevels: HashMap<(String, String), Vec<&ToplevelInfo>> = HashMap::new();
+        for info in self
+            .toplevel_info_state
+            .toplevels()
+            .filter(|info| should_manage_toplevel(info))
+            .filter(|info| info.cosmic_toplevel.is_some())
+        {
+            current_toplevels
+                .entry((info.identifier.clone(), info.app_id.clone()))
+                .or_default()
+                .push(info);
+        }
+
+        for infos in current_toplevels.values_mut() {
+            infos.sort_by_key(|info| info.foreign_toplevel.id().protocol_id());
+        }
+
+        for entry in snapshot
+            .entries
+            .iter()
+            .filter(|entry| !entry.was_active)
+            .chain(snapshot.entries.iter().filter(|entry| entry.was_active))
+        {
+            let key = (entry.identifier.clone(), entry.app_id.clone());
+            let Some(infos) = current_toplevels.get_mut(&key) else {
+                continue;
+            };
+
+            if infos.is_empty() {
+                continue;
+            }
+
+            let info = infos.remove(0);
+            let Some(cosmic_toplevel) = info.cosmic_toplevel.as_ref() else {
+                continue;
+            };
+
+            manager.manager.unset_minimized(cosmic_toplevel);
+            match entry.restore_kind {
+                RestoreKind::Maximized => manager.manager.set_maximized(cosmic_toplevel),
+                RestoreKind::Normal => manager.manager.unset_maximized(cosmic_toplevel),
+            }
+        }
+
+        Ok(())
     }
 
     fn minimize_all(&mut self) -> Result<(), WmError> {
@@ -363,6 +525,7 @@ fn should_manage_toplevel(info: &ToplevelInfo) -> bool {
 
 fn wayland_handler(
     request_rx: calloop::channel::Channel<Request>,
+    ready_tx: mpsc::Sender<Result<(), WmError>>,
 ) -> Result<(), WmError> {
     let conn = Connection::connect_to_env()
         .map_err(|e| WmError::Command(format!("wayland connect failed: {e}")))?;
@@ -383,6 +546,9 @@ fn wayland_handler(
         .insert_source(request_rx, |event, _, state| match event {
             calloop::channel::Event::Msg(Request::Toggle(responder)) => {
                 let _ = responder.send(state.handle_toggle());
+            }
+            calloop::channel::Event::Msg(Request::TogglePersistent(responder)) => {
+                let _ = responder.send(state.handle_toggle_persistent());
             }
             calloop::channel::Event::Closed => {
                 state.exit = true;
@@ -406,6 +572,17 @@ fn wayland_handler(
         supports_move_to_ext_workspace: false,
     };
 
+    for _ in 0..3 {
+        event_loop
+            .dispatch(Some(Duration::from_millis(100)), &mut app_data)
+            .map_err(|e| WmError::Command(format!("event loop warmup dispatch failed: {e}")))?;
+        if app_data.toplevel_info_state.toplevels().next().is_some() {
+            break;
+        }
+    }
+
+    let _ = ready_tx.send(Ok(()));
+
     while !app_data.exit {
         event_loop
             .dispatch(None, &mut app_data)
@@ -424,4 +601,57 @@ cosmic::cctk::delegate_toplevel_manager!(AppData);
 pub enum WmError {
     #[error("failed to execute command: {0}")]
     Command(String),
+}
+
+fn snapshot_file_path() -> Result<PathBuf, WmError> {
+    let config = config_dir().ok_or_else(|| {
+        WmError::Command("failed to resolve ~/.config directory".to_string())
+    })?;
+    Ok(config
+        .join("cosmic-ext-showdesktop")
+        .join("snapshot.json"))
+}
+
+fn load_snapshot() -> Result<PersistedSnapshot, WmError> {
+    let path = snapshot_file_path()?;
+    let contents = fs::read_to_string(&path).map_err(|e| {
+        WmError::Command(format!("failed to read snapshot at {}: {e}", path.display()))
+    })?;
+    serde_json::from_str::<PersistedSnapshot>(&contents).map_err(|e| {
+        WmError::Command(format!("failed to parse snapshot at {}: {e}", path.display()))
+    })
+}
+
+fn save_snapshot(snapshot: &PersistedSnapshot) -> Result<(), WmError> {
+    let path = snapshot_file_path()?;
+    let Some(parent) = path.parent() else {
+        return Err(WmError::Command(format!(
+            "failed to resolve snapshot parent path for {}",
+            path.display()
+        )));
+    };
+
+    fs::create_dir_all(parent).map_err(|e| {
+        WmError::Command(format!(
+            "failed to create snapshot directory {}: {e}",
+            parent.display()
+        ))
+    })?;
+
+    let contents = serde_json::to_string_pretty(snapshot)
+        .map_err(|e| WmError::Command(format!("failed to serialize snapshot: {e}")))?;
+    fs::write(&path, contents).map_err(|e| {
+        WmError::Command(format!("failed to write snapshot at {}: {e}", path.display()))
+    })
+}
+
+fn clear_snapshot_file() -> Result<(), WmError> {
+    let path = snapshot_file_path()?;
+    if !path.exists() {
+        return Ok(());
+    }
+
+    fs::remove_file(&path).map_err(|e| {
+        WmError::Command(format!("failed to remove snapshot at {}: {e}", path.display()))
+    })
 }

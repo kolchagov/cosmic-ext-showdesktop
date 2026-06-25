@@ -11,6 +11,17 @@ A small COSMIC DE [Wayland session] panel applet that toggles all tracked window
 - Restores windows in an order that preserves the previously active window
 - Preserves maximize state on restore
 
+## CLI parameters
+
+Complied binary accepts parameter *-s* which does one-shot show-desktop action. The idea is to be binded to **Win+D** hotkey. Here are the steps:
+- compile and install (see below)
+- make sure it is accessible in path: `command -v cosmic-ext-showdesktop` should show the full path
+- In POP OS: Go to `Cosmic settings`  -> `Input devices` -> `Keyboard shortcuts`
+    - select `Custom` then "Add Shortcut"
+    - give it a name `Show desktop`
+    - set command `cosmic-ext-showdesktop -s`
+    - type key `Win+D` for shortcut and you're done
+    
 ## Build
 
 ```bash
@@ -49,4 +60,9 @@ If this prints nothing, either add `~/.local/bin` to your session `PATH` or inst
 
 4. Add to panel/dock applets, go to settings>desktop> panel/dock > configure applets > add "Show Desktop"
 
-thnk u codex ❤️❤️❤️
+## this project is a fork of SamkitJain660/cosmic-ext-showdesktop
+
+If you like it, or think it's useful, you can donate small amount of your choise:
+LTC ltc1qzvszc53fcrprurkhzckw03hutzfyu8k2mq3499
+
+BTC bc1qr2pr5g06e5vk4wz9wsrf2pjtmrla888fnafju6  
