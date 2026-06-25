@@ -13,7 +13,7 @@ A small COSMIC DE [Wayland session] panel applet that toggles all tracked window
 
 ## CLI parameters
 
-Complied binary accepts parameter *-s* which does one-shot show-desktop action. The idea is to be binded to **Win+D** hotkey. Here are the steps:
+Complied binary accepts parameter `-s` which does one-shot show/hide desktop action. The idea is to be binded to **Win+D** hotkey. Here are the steps:
 - compile and install (see below)
 - make sure it is accessible in path: `command -v cosmic-ext-showdesktop` should show the full path
 - In POP OS: Go to `Cosmic settings`  -> `Input devices` -> `Keyboard shortcuts`
@@ -63,6 +63,7 @@ If this prints nothing, either add `~/.local/bin` to your session `PATH` or inst
 ## this project is a fork of SamkitJain660/cosmic-ext-showdesktop
 
 If you like it, or think it's useful, you can donate small amount of your choise:
-LTC ltc1qzvszc53fcrprurkhzckw03hutzfyu8k2mq3499
 
-BTC bc1qr2pr5g06e5vk4wz9wsrf2pjtmrla888fnafju6  
+LTC `ltc1qzvszc53fcrprurkhzckw03hutzfyu8k2mq3499`
+
+BTC `bc1qr2pr5g06e5vk4wz9wsrf2pjtmrla888fnafju6`  

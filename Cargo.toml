@@ -6,7 +6,7 @@ description = "COSMIC panel applet: show desktop by minimizing/restoring tracked
 license = "MIT"
 
 [dependencies]
-libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features = false, features = ["applet", "tokio", "wayland"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features = false, features = ["applet"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
