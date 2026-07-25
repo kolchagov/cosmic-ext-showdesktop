@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-ext-showdesktop"
-version = "0.1.1"
+version = "0.0.2"
 edition = "2021"
 description = "COSMIC panel applet: show desktop by minimizing/restoring tracked windows"
 license = "MIT"
