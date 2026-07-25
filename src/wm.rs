@@ -24,7 +24,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +44,10 @@ struct PersistedSnapshotEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSnapshot {
     entries: Vec<PersistedSnapshotEntry>,
+    created_at_unix_secs: Option<u64>,
 }
+
+const SNAPSHOT_TTL_SECS: u64 = 5 * 60;
 
 #[derive(Debug, Clone)]
 struct SnapshotEntry {
@@ -143,6 +146,12 @@ impl AppData {
     fn handle_toggle_persistent(&mut self) -> Result<(), WmError> {
         if snapshot_file_path()?.exists() {
             let snapshot = load_snapshot()?;
+
+            if is_snapshot_expired(&snapshot)? {
+                clear_snapshot_file()?;
+                return self.minimize_all_and_persist();
+            }
+
             let restore_result = self.restore_persisted_snapshot(&snapshot);
             let clear_result = clear_snapshot_file();
             restore_result?;
@@ -208,7 +217,10 @@ impl AppData {
             });
         }
 
-        save_snapshot(&PersistedSnapshot { entries })
+        save_snapshot(&PersistedSnapshot {
+            entries,
+            created_at_unix_secs: Some(unix_now_secs()?),
+        })
     }
 
     fn restore_persisted_snapshot(&mut self, snapshot: &PersistedSnapshot) -> Result<(), WmError> {
@@ -654,4 +666,24 @@ fn clear_snapshot_file() -> Result<(), WmError> {
     fs::remove_file(&path).map_err(|e| {
         WmError::Command(format!("failed to remove snapshot at {}: {e}", path.display()))
     })
+}
+
+fn unix_now_secs() -> Result<u64, WmError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|e| WmError::Command(format!("failed to read system time: {e}")))
+}
+
+fn is_snapshot_expired(snapshot: &PersistedSnapshot) -> Result<bool, WmError> {
+    let Some(created_at_unix_secs) = snapshot.created_at_unix_secs else {
+        return Ok(true);
+    };
+
+    let now = unix_now_secs()?;
+    if created_at_unix_secs > now {
+        return Ok(true);
+    }
+
+    Ok(now - created_at_unix_secs > SNAPSHOT_TTL_SECS)
 }

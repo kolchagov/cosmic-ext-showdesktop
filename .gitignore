@@ -1,1 +1,5 @@
 target/
+.vscode
+.mcp.json
+.repowise
+CLAUDE.md
