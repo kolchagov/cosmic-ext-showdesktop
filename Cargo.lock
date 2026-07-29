@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-showdesktop"
-version = "0.1.1"
+version = "0.0.3"
 dependencies = [
  "dirs 5.0.1",
  "libcosmic",

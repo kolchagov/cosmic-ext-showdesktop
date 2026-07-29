@@ -47,7 +47,19 @@ struct PersistedSnapshot {
     created_at_unix_secs: Option<u64>,
 }
 
-const SNAPSHOT_TTL_SECS: u64 = 5 * 60;
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AppConfig {
+    #[serde(
+        default,
+        alias = "timeout",
+        alias = "timeout_secs",
+        alias = "single_shot_timeout",
+        alias = "single_shot_timeout_secs"
+    )]
+    snapshot_timeout_secs: Option<u64>,
+}
+
+const DEFAULT_SNAPSHOT_TTL_SECS: u64 = 5 * 60;
 
 #[derive(Debug, Clone)]
 struct SnapshotEntry {
@@ -616,12 +628,39 @@ pub enum WmError {
 }
 
 fn snapshot_file_path() -> Result<PathBuf, WmError> {
+    Ok(app_config_dir()?.join("snapshot.json"))
+}
+
+fn config_file_path() -> Result<PathBuf, WmError> {
+    Ok(app_config_dir()?.join("config.json"))
+}
+
+fn app_config_dir() -> Result<PathBuf, WmError> {
     let config = config_dir().ok_or_else(|| {
         WmError::Command("failed to resolve ~/.config directory".to_string())
     })?;
+    Ok(config.join("cosmic-ext-showdesktop"))
+}
+
+fn load_app_config() -> Result<AppConfig, WmError> {
+    let path = config_file_path()?;
+    if !path.exists() {
+        return Ok(AppConfig::default());
+    }
+
+    let contents = fs::read_to_string(&path).map_err(|e| {
+        WmError::Command(format!("failed to read config at {}: {e}", path.display()))
+    })?;
+
+    serde_json::from_str::<AppConfig>(&contents)
+        .map_err(|e| WmError::Command(format!("failed to parse config at {}: {e}", path.display())))
+}
+
+fn snapshot_ttl_secs() -> Result<u64, WmError> {
+    let config = load_app_config()?;
     Ok(config
-        .join("cosmic-ext-showdesktop")
-        .join("snapshot.json"))
+        .snapshot_timeout_secs
+        .unwrap_or(DEFAULT_SNAPSHOT_TTL_SECS))
 }
 
 fn load_snapshot() -> Result<PersistedSnapshot, WmError> {
@@ -685,5 +724,6 @@ fn is_snapshot_expired(snapshot: &PersistedSnapshot) -> Result<bool, WmError> {
         return Ok(true);
     }
 
-    Ok(now - created_at_unix_secs > SNAPSHOT_TTL_SECS)
+    let ttl_secs = snapshot_ttl_secs()?;
+    Ok(now - created_at_unix_secs >= ttl_secs)
 }
